@@ -395,12 +395,9 @@ FARPROC GetProcAddressEx(HANDLE _Process, HMODULE _Module, LPCSTR _Name) {
 			}
 			
 		}
-		std::cout << "name" << cur_name << std::endl;
-
 	}
 
 	return nullptr;
-
 }
 
 FARPROC GetProcAddressEx(HANDLE _Process, LPCSTR _Module, LPCSTR _Name) {
