@@ -8,9 +8,29 @@
 #include <Psapi.h>
 #include "GetProcAddressEx.h"
 
+extern "C" {
+	__declspec(dllexport) bool SetupExternalWrapper(const char* processName);
+	__declspec(dllexport) void CleanupExternalWrapper();
+	__declspec(dllexport) uint8_t ReadMemory8(uint32_t ps2_addr);
+	__declspec(dllexport) void WriteMemory8(uint32_t ps2_addr, uint8_t value);
+}
 
-int main(int argc, char* argv)
+static HANDLE snapshot = INVALID_HANDLE_VALUE;
+static HANDLE hProcess = INVALID_HANDLE_VALUE;
+
+// These will hold our actual base addresses we can use with WriteProcessMemory and ReadProcessMemory
+static uintptr_t EEmemBaseAddress;
+static uintptr_t IOPmemBaseAddress;
+static uintptr_t VUmemBaseAddress;
+
+bool SetupExternalWrapper(const char* processName)
 {
+	if (hProcess != INVALID_HANDLE_VALUE || snapshot != INVALID_HANDLE_VALUE)
+	{
+		std::cerr << "Already setup!\n";
+		return false;
+	}
+
 	PROCESSENTRY32 entry;
 	entry.dwSize = sizeof(PROCESSENTRY32);
 
@@ -23,11 +43,12 @@ int main(int argc, char* argv)
 		// Enumerate through the snapshot, looking for the PCSX2 process
 		while (Process32Next(ss, &entry) == TRUE)
 		{
-			// This executable name can and will change depending on devel builds, retail builds, or if users rename it
-			if (_wcsicmp(entry.szExeFile, L"pcsx2-qtx64-avx2-dev.exe") == 0)
+			std::unique_ptr<wchar_t[]> wProcessName = std::make_unique<wchar_t[]>(strlen(processName) + 1);
+			mbstowcs_s(NULL, wProcessName.get(), strlen(processName) + 1, processName, strlen(processName));
+			if (_wcsicmp(entry.szExeFile, wProcessName.get()) == 0)
 			{
 				found_process = true;
-				HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, entry.th32ProcessID);
+				hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, entry.th32ProcessID);
 				if (hProcess == NULL)
 				{
 					std::cout << "OpenProcess Failed. GetLastError: " << GetLastError();
@@ -41,12 +62,12 @@ int main(int argc, char* argv)
 				// We have successfully retrieved a handle to PCSX2. Fetch all of the modules loaded in PCSX2
 				if (!EnumProcessModules(hProcess, hModule, sizeof(hModule), &hModuleSizeNeeded))
 				{
-					std::cout << "EnumProcessModules GetLastError: " << GetLastError();
+					std::cerr << "EnumProcessModules GetLastError: " << GetLastError();
 					return -1;
 				}
 				if (hModuleSizeNeeded > sizeof(hModule))
 				{
-					std::cout << "hModule array too small, try increasing it from " << sizeof(hModule) / sizeof(HMODULE) << std::endl;
+					std::cerr << "hModule array too small, try increasing it from " << sizeof(hModule) / sizeof(HMODULE) << std::endl;
 					return -1;
 				}
 				DWORD modulesFound = hModuleSizeNeeded / sizeof(HMODULE);
@@ -62,11 +83,6 @@ int main(int argc, char* argv)
 				PVOID IOPmemAddress = GetProcAddressEx(hProcess, hPCSX2, "IOPmem");
 				PVOID VUmemAddress = GetProcAddressEx(hProcess, hPCSX2, "VUmem");
 
-				// These will hold our actual base addresses we can use with WriteProcessMemory and ReadProcessMemory
-				uintptr_t EEmemBaseAddress;
-				uintptr_t IOPmemBaseAddress;
-				uintptr_t VUmemBaseAddress;
-
 				SIZE_T bytesRead;
 				// We need to dereference the pointers to get that actual starting address of our memory segments
 				ReadProcessMemory(hProcess, EEmemAddress, &EEmemBaseAddress, sizeof(uintptr_t), &bytesRead);
@@ -77,12 +93,19 @@ int main(int argc, char* argv)
 				std::cout << std::hex << "IOPmem: " << (uintptr_t)IOPmemAddress << "->" << IOPmemBaseAddress << "\n";
 				std::cout << std::hex << "VUmem: " << (uintptr_t)VUmemAddress << "->" << VUmemBaseAddress << "\n";
 
+				char rpmBuffer[3];
+				uintptr_t addressToRead = EEmemBaseAddress + 0x1262F8;
+				ReadProcessMemory(hProcess, (PVOID)addressToRead, rpmBuffer, 3, &bytesRead);
+
+				std::cout << "READ CHAR " << rpmBuffer[0] << " FROM " << std::hex << addressToRead << std::endl;
+				return true;
+
 				// Now that we have our base addresses, let's look for a string that starts with "sce" in our EE memory region
 				const char* stringToFind = "sce";
 				for (int i = 0x200000; i < 0x300000; i++)
 				{
 					char rpmBuffer[3];
-					SIZE_T bytesRead;
+					//SIZE_T bytesRead;
 					uintptr_t addressToRead = EEmemBaseAddress + i;
 					ReadProcessMemory(hProcess, (PVOID)addressToRead, rpmBuffer, 3, &bytesRead);
 
@@ -102,8 +125,38 @@ int main(int argc, char* argv)
 
 		if (!found_process)
 		{
-			std::cout << "Couldn't find the PCSX2 process" << std::endl;
+			std::cerr << "Couldn't find the PCSX2 process" << std::endl;
 		}
 	}
-	return 0;
+	return false;
+}
+
+void CleanupExternalWrapper()
+{
+	if (hProcess != INVALID_HANDLE_VALUE)
+	{
+		CloseHandle(hProcess);
+		hProcess = INVALID_HANDLE_VALUE;
+	}
+	if (snapshot != INVALID_HANDLE_VALUE)
+	{
+		CloseHandle(snapshot);
+		snapshot = INVALID_HANDLE_VALUE;
+	}
+}
+
+uint8_t ReadMemory8(uint32_t ps2_addr)
+{
+	uintptr_t addressToRead = EEmemBaseAddress + ps2_addr;
+	uint8_t byte;
+	SIZE_T bytesRead;
+	ReadProcessMemory(hProcess, (PVOID)addressToRead, &byte, 1, &bytesRead);
+	return byte;
+}
+
+void WriteMemory8(uint32_t ps2_addr, uint8_t value)
+{
+	uintptr_t addressToWrite = EEmemBaseAddress + ps2_addr;
+	SIZE_T bytesWritten;
+	WriteProcessMemory(hProcess, (PVOID)addressToWrite, &value, 1, &bytesWritten);
 }
