@@ -27,6 +27,9 @@ namespace pcsx2_offsetreader_client_csharp
                 return;
             }
 
+            byte val = ReadMemory8(0x42BA54);
+            // print as hex
+            Console.WriteLine("Value at 0x042C61C: 0x" + val.ToString());
             Console.WriteLine("Scanning memory from 0x100000 to 0x200000 for the string \"Cache\"");
 
             for (uint i = 0x100000; i < 0x200000; i++)

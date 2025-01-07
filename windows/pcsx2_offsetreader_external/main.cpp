@@ -25,6 +25,7 @@ static uintptr_t VUmemBaseAddress;
 
 bool SetupExternalWrapper(const char* processName)
 {
+	std::cout << "[dll] SetupExternalWrapper()\n";
 	if (hProcess != INVALID_HANDLE_VALUE || snapshot != INVALID_HANDLE_VALUE)
 	{
 		std::cerr << "Already setup!\n";
@@ -40,19 +41,22 @@ bool SetupExternalWrapper(const char* processName)
 
 	if (Process32First(ss, &entry) == TRUE)
 	{
+		std::unique_ptr<wchar_t[]> wProcessName = std::make_unique<wchar_t[]>(strlen(processName) + 1);
+		mbstowcs_s(NULL, wProcessName.get(), strlen(processName) + 1, processName, strlen(processName));
+		
+		std::wcout << "Looking for process: \"" << wProcessName.get() << "\"" << std::endl;
 		// Enumerate through the snapshot, looking for the PCSX2 process
 		while (Process32Next(ss, &entry) == TRUE)
 		{
-			std::unique_ptr<wchar_t[]> wProcessName = std::make_unique<wchar_t[]>(strlen(processName) + 1);
-			mbstowcs_s(NULL, wProcessName.get(), strlen(processName) + 1, processName, strlen(processName));
 			if (_wcsicmp(entry.szExeFile, wProcessName.get()) == 0)
 			{
 				found_process = true;
 				hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, entry.th32ProcessID);
 				if (hProcess == NULL)
 				{
-					std::cout << "OpenProcess Failed. GetLastError: " << GetLastError();
-					return -1;
+					std::cerr << "OpenProcess Failed. GetLastError: " << GetLastError() << std::endl;
+					hProcess == INVALID_HANDLE_VALUE;
+					return false;
 				}
 
 				std::cout << "PCSX2 process found" << std::endl;
@@ -63,12 +67,12 @@ bool SetupExternalWrapper(const char* processName)
 				if (!EnumProcessModules(hProcess, hModule, sizeof(hModule), &hModuleSizeNeeded))
 				{
 					std::cerr << "EnumProcessModules GetLastError: " << GetLastError();
-					return -1;
+					return false;
 				}
 				if (hModuleSizeNeeded > sizeof(hModule))
 				{
 					std::cerr << "hModule array too small, try increasing it from " << sizeof(hModule) / sizeof(HMODULE) << std::endl;
-					return -1;
+					return false;
 				}
 				DWORD modulesFound = hModuleSizeNeeded / sizeof(HMODULE);
 				std::cout << "Found " << modulesFound << " modules\n";
@@ -92,34 +96,7 @@ bool SetupExternalWrapper(const char* processName)
 				std::cout << std::hex << "EEmem:  " << (uintptr_t)EEmemAddress << "->" << EEmemBaseAddress << "\n";
 				std::cout << std::hex << "IOPmem: " << (uintptr_t)IOPmemAddress << "->" << IOPmemBaseAddress << "\n";
 				std::cout << std::hex << "VUmem: " << (uintptr_t)VUmemAddress << "->" << VUmemBaseAddress << "\n";
-
-				char rpmBuffer[3];
-				uintptr_t addressToRead = EEmemBaseAddress + 0x1262F8;
-				ReadProcessMemory(hProcess, (PVOID)addressToRead, rpmBuffer, 3, &bytesRead);
-
-				std::cout << "READ CHAR " << rpmBuffer[0] << " FROM " << std::hex << addressToRead << std::endl;
 				return true;
-
-				// Now that we have our base addresses, let's look for a string that starts with "sce" in our EE memory region
-				const char* stringToFind = "sce";
-				for (int i = 0x200000; i < 0x300000; i++)
-				{
-					char rpmBuffer[3];
-					//SIZE_T bytesRead;
-					uintptr_t addressToRead = EEmemBaseAddress + i;
-					ReadProcessMemory(hProcess, (PVOID)addressToRead, rpmBuffer, 3, &bytesRead);
-
-					if (memcmp(rpmBuffer, stringToFind, 3) == 0)
-					{
-						std::cout << "Found instance of \"sce\" at address " << addressToRead << "\n";
-						char stringBuffer[256];
-						ReadProcessMemory(hProcess, (PVOID)addressToRead, stringBuffer, sizeof(stringBuffer), &bytesRead);
-
-						std::cout << "Full string: " << stringBuffer << std::endl;
-					}
-				}
-				// Cleanup after we are done
-				CloseHandle(hProcess);
 			}
 		}
 
